@@ -1,1 +1,12 @@
-
+{
+  "name": "drex-bot",
+  "version": "1.0.0",
+  "description": "DREX Telegram Group Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
