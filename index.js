@@ -1,81 +1,115 @@
 const TelegramBot = require('node-telegram-bot-api');
+const http = require('http');
 const fs = require('fs');
 
 const TOKEN = process.env.BOT_TOKEN;
+const PORT = Number(process.env.PORT) || 10000;
 
 if (!TOKEN) {
   console.error('❌ BOT_TOKEN غير موجود');
   process.exit(1);
 }
 
-const bot = new TelegramBot(TOKEN, { polling: true });
+// =========================
+// RENDER PORT
+// =========================
+
+const server = http.createServer((req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8'
+  });
+  res.end('DREX BOT is running');
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 DREX BOT listening on port ${PORT}`);
+});
+
+// =========================
+// TELEGRAM
+// =========================
+
+const bot = new TelegramBot(TOKEN, {
+  polling: true
+});
+
+console.log('🤖 DREX BOT started');
+
+// =========================
+// DATA
+// =========================
 
 const DATA_FILE = './data.json';
 
 let data = {
   groups: {},
-  users: {}
+  users: {},
+  guesses: {}
 };
-
-if (fs.existsSync(DATA_FILE)) {
-  try {
-    data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  } catch {
-    console.log('⚠️ تعذر قراءة data.json، سيتم إنشاء بيانات جديدة');
-  }
-}
 
 function save() {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    console.error('❌ خطأ حفظ البيانات:', e.message);
+    fs.writeFileSync(
+      DATA_FILE,
+      JSON.stringify(data, null, 2)
+    );
+  } catch (err) {
+    console.error('❌ Save error:', err.message);
   }
 }
 
-function groupData(chatId) {
-  chatId = String(chatId);
+if (fs.existsSync(DATA_FILE)) {
+  try {
+    data = JSON.parse(
+      fs.readFileSync(DATA_FILE, 'utf8')
+    );
+  } catch (err) {
+    console.log('⚠️ Creating new data');
+  }
+}
 
-  if (!data.groups[chatId]) {
-    data.groups[chatId] = {
-      antiSpam: true,
-      antiFlood: true,
+function getGroup(chatId) {
+  const id = String(chatId);
+
+  if (!data.groups[id]) {
+    data.groups[id] = {
       antiLink: false,
       antiSwear: true,
+      antiFlood: true,
       lockdown: false,
       warningsLimit: 3,
-      muteMinutes: 10,
-      logs: null,
-      customWords: []
+      muteMinutes: 10
     };
+
+    save();
   }
 
-  return data.groups[chatId];
+  return data.groups[id];
 }
 
-function userData(userId) {
-  userId = String(userId);
+function getUser(userId) {
+  const id = String(userId);
 
-  if (!data.users[userId]) {
-    data.users[userId] = {
-      xp: 0,
+  if (!data.users[id]) {
+    data.users[id] = {
       points: 0,
+      xp: 0,
       wins: 0,
       losses: 0,
       games: 0,
-      warnings: {}
+      warnings: {},
+      daily: null
     };
+
+    save();
   }
 
-  return data.users[userId];
+  return data.users[id];
 }
 
-function addXP(userId, amount) {
-  const user = userData(userId);
-  user.xp += amount;
-  user.points += amount;
-  save();
-}
+// =========================
+// HELPERS
+// =========================
 
 function mention(user) {
   const name =
@@ -88,7 +122,11 @@ function mention(user) {
 
 async function isAdmin(chatId, userId) {
   try {
-    const member = await bot.getChatMember(chatId, userId);
+    const member =
+      await bot.getChatMember(
+        chatId,
+        userId
+      );
 
     return (
       member.status === 'administrator' ||
@@ -99,121 +137,149 @@ async function isAdmin(chatId, userId) {
   }
 }
 
-async function botIsAdmin(chatId) {
-  try {
-    const me = await bot.getMe();
-    return await isAdmin(chatId, me.id);
-  } catch {
-    return false;
-  }
+function repliedUser(msg) {
+  return msg.reply_to_message?.from || null;
 }
 
-async function deleteMessage(chatId, messageId) {
+async function deleteMsg(chatId, messageId) {
   try {
-    await bot.deleteMessage(chatId, messageId);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function muteUser(chatId, userId, minutes) {
-  try {
-    const until = Math.floor(Date.now() / 1000) + minutes * 60;
-
-    await bot.restrictChatMember(chatId, userId, {
-      until_date: until,
-      permissions: {
-        can_send_messages: false,
-        can_send_audios: false,
-        can_send_documents: false,
-        can_send_photos: false,
-        can_send_videos: false,
-        can_send_video_notes: false,
-        can_send_voice_notes: false,
-        can_send_polls: false,
-        can_send_other_messages: false,
-        can_add_web_page_previews: false
-      }
-    });
-
-    return true;
-  } catch (e) {
-    console.error('Mute error:', e.message);
-    return false;
-  }
-}
-
-async function unmuteUser(chatId, userId) {
-  try {
-    await bot.restrictChatMember(chatId, userId, {
-      permissions: {
-        can_send_messages: true,
-        can_send_audios: true,
-        can_send_documents: true,
-        can_send_photos: true,
-        can_send_videos: true,
-        can_send_video_notes: true,
-        can_send_voice_notes: true,
-        can_send_polls: true,
-        can_send_other_messages: true,
-        can_add_web_page_previews: true
-      }
-    });
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function banUser(chatId, userId) {
-  try {
-    await bot.banChatMember(chatId, userId);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function unbanUser(chatId, userId) {
-  try {
-    await bot.unbanChatMember(chatId, userId, {
-      only_if_banned: true
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function kickUser(chatId, userId) {
-  try {
-    await bot.banChatMember(chatId, userId);
-    await bot.unbanChatMember(chatId, userId);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function sendLog(chatId, text) {
-  const settings = groupData(chatId);
-
-  if (!settings.logs) return;
-
-  try {
-    await bot.sendMessage(settings.logs, text, {
-      parse_mode: 'Markdown'
-    });
+    await bot.deleteMessage(
+      chatId,
+      messageId
+    );
   } catch {}
 }
 
-function containsLink(text) {
-  if (!text) return false;
+async function mute(
+  chatId,
+  userId,
+  minutes
+) {
+  try {
+    const until =
+      Math.floor(Date.now() / 1000) +
+      minutes * 60;
 
-  return /(https?:\/\/|www\.|t\.me\/|telegram\.me\/)/i.test(text);
+    await bot.restrictChatMember(
+      chatId,
+      userId,
+      {
+        until_date: until,
+        permissions: {
+          can_send_messages: false,
+          can_send_audios: false,
+          can_send_documents: false,
+          can_send_photos: false,
+          can_send_videos: false,
+          can_send_video_notes: false,
+          can_send_voice_notes: false,
+          can_send_polls: false,
+          can_send_other_messages: false,
+          can_add_web_page_previews: false
+        }
+      }
+    );
+
+    return true;
+  } catch (err) {
+    console.error(
+      'Mute error:',
+      err.message
+    );
+
+    return false;
+  }
 }
+
+async function unmute(
+  chatId,
+  userId
+) {
+  try {
+    await bot.restrictChatMember(
+      chatId,
+      userId,
+      {
+        permissions: {
+          can_send_messages: true,
+          can_send_audios: true,
+          can_send_documents: true,
+          can_send_photos: true,
+          can_send_videos: true,
+          can_send_video_notes: true,
+          can_send_voice_notes: true,
+          can_send_polls: true,
+          can_send_other_messages: true,
+          can_add_web_page_previews: true
+        }
+      }
+    );
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ban(
+  chatId,
+  userId
+) {
+  try {
+    await bot.banChatMember(
+      chatId,
+      userId
+    );
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function unban(
+  chatId,
+  userId
+) {
+  try {
+    await bot.unbanChatMember(
+      chatId,
+      userId,
+      {
+        only_if_banned: true
+      }
+    );
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function kick(
+  chatId,
+  userId
+) {
+  try {
+    await bot.banChatMember(
+      chatId,
+      userId
+    );
+
+    await bot.unbanChatMember(
+      chatId,
+      userId
+    );
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// =========================
+// PROTECTION
+// =========================
 
 const badWords = [
   'كلمة_مسيئة_1',
@@ -221,220 +287,274 @@ const badWords = [
   'كلمة_مسيئة_3'
 ];
 
-function containsSwear(text, settings) {
+const floodMap = new Map();
+
+function hasLink(text) {
+  return /(https?:\/\/|www\.|t\.me\/)/i.test(
+    text || ''
+  );
+}
+
+function hasSwear(text) {
   if (!text) return false;
 
-  const normalized = text
-    .toLowerCase()
-    .replace(/[\s_\-*.]+/g, '');
-
-  const words = [
-    ...badWords,
-    ...(settings.customWords || [])
-  ];
-
-  return words.some(word => {
-    const clean = String(word)
+  const normalized =
+    text
       .toLowerCase()
       .replace(/[\s_\-*.]+/g, '');
 
-    return clean && normalized.includes(clean);
+  return badWords.some(word => {
+    const clean =
+      word
+        .toLowerCase()
+        .replace(/[\s_\-*.]+/g, '');
+
+    return normalized.includes(clean);
   });
 }
 
-const spamMap = new Map();
+async function protection(msg) {
+  if (!msg.chat) return;
 
-async function processProtection(msg) {
-  if (!msg.chat || msg.chat.type === 'private') return;
+  if (
+    msg.chat.type === 'private'
+  ) {
+    return;
+  }
+
   if (!msg.from) return;
 
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  const settings = groupData(chatId);
 
-  if (await isAdmin(chatId, userId)) return;
-
-  if (settings.lockdown) {
-    await deleteMessage(chatId, msg.message_id);
+  if (
+    await isAdmin(
+      chatId,
+      userId
+    )
+  ) {
     return;
   }
 
-  const text = msg.text || msg.caption || '';
+  const settings =
+    getGroup(chatId);
 
-  // Anti-Link
-  if (settings.antiLink && containsLink(text)) {
-    await deleteMessage(chatId, msg.message_id);
+  // LOCKDOWN
+  if (settings.lockdown) {
+    await deleteMsg(
+      chatId,
+      msg.message_id
+    );
 
-    const user = userData(userId);
+    return;
+  }
 
-    if (!user.warnings[chatId]) {
+  const text =
+    msg.text ||
+    msg.caption ||
+    '';
+
+  // ANTI LINK
+  if (
+    settings.antiLink &&
+    hasLink(text)
+  ) {
+    await deleteMsg(
+      chatId,
+      msg.message_id
+    );
+
+    await bot.sendMessage(
+      chatId,
+      `🔗 ${mention(msg.from)}\nممنوع إرسال الروابط.`,
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+
+    return;
+  }
+
+  // ANTI SWEAR
+  if (
+    settings.antiSwear &&
+    hasSwear(text)
+  ) {
+    await deleteMsg(
+      chatId,
+      msg.message_id
+    );
+
+    const user =
+      getUser(userId);
+
+    if (
+      !user.warnings[chatId]
+    ) {
       user.warnings[chatId] = 0;
     }
 
     user.warnings[chatId]++;
+
     save();
+
+    const count =
+      user.warnings[chatId];
 
     await bot.sendMessage(
       chatId,
-      `🔗 ${mention(msg.from)} تم حذف الرابط.\n⚠️ التحذير: ${user.warnings[chatId]}/${settings.warningsLimit}`,
-      { parse_mode: 'Markdown' }
+      `🤬 ${mention(msg.from)}\n⚠️ تحذير ${count}/${settings.warningsLimit}`,
+      {
+        parse_mode: 'Markdown'
+      }
     );
 
-    await sendLog(
-      chatId,
-      `🔗 *Anti-Link*\n👤 ${mention(msg.from)}\n⚠️ تحذير ${user.warnings[chatId]}/${settings.warningsLimit}`
-    );
+    if (
+      count >=
+      settings.warningsLimit
+    ) {
+      await mute(
+        chatId,
+        userId,
+        settings.muteMinutes
+      );
 
-    if (user.warnings[chatId] >= settings.warningsLimit) {
-      await muteUser(chatId, userId, settings.muteMinutes);
       user.warnings[chatId] = 0;
+
       save();
 
       await bot.sendMessage(
         chatId,
         `🔇 تم كتم ${mention(msg.from)} لمدة ${settings.muteMinutes} دقائق.`,
-        { parse_mode: 'Markdown' }
+        {
+          parse_mode: 'Markdown'
+        }
       );
     }
 
     return;
   }
 
-  // Anti-Swear
-  if (settings.antiSwear && containsSwear(text, settings)) {
-    await deleteMessage(chatId, msg.message_id);
+  // ANTI FLOOD
+  if (settings.antiFlood) {
+    const key =
+      `${chatId}:${userId}`;
 
-    const user = userData(userId);
+    const now = Date.now();
 
-    if (!user.warnings[chatId]) {
-      user.warnings[chatId] = 0;
+    if (!floodMap.has(key)) {
+      floodMap.set(key, []);
     }
 
-    user.warnings[chatId]++;
-    save();
+    const messages =
+      floodMap.get(key);
 
-    await bot.sendMessage(
-      chatId,
-      `🤬 ${mention(msg.from)} ممنوع السب.\n⚠️ التحذير: ${user.warnings[chatId]}/${settings.warningsLimit}`,
-      { parse_mode: 'Markdown' }
-    );
+    messages.push(now);
 
-    await sendLog(
-      chatId,
-      `🤬 *Anti-Swear*\n👤 ${mention(msg.from)}\n⚠️ تحذير ${user.warnings[chatId]}/${settings.warningsLimit}`
-    );
-
-    if (user.warnings[chatId] >= settings.warningsLimit) {
-      await muteUser(chatId, userId, settings.muteMinutes);
-
-      user.warnings[chatId] = 0;
-      save();
-
-      await bot.sendMessage(
-        chatId,
-        `🔇 تم كتم ${mention(msg.from)} بسبب تكرار المخالفات.`,
-        { parse_mode: 'Markdown' }
-      );
+    while (
+      messages.length &&
+      now - messages[0] > 5000
+    ) {
+      messages.shift();
     }
 
-    return;
-  }
+    if (
+      messages.length >= 7
+    ) {
+      floodMap.delete(key);
 
-  // Anti-Flood / Spam
-  const key = `${chatId}:${userId}`;
-  const now = Date.now();
-
-  if (!spamMap.has(key)) {
-    spamMap.set(key, []);
-  }
-
-  const timestamps = spamMap.get(key);
-
-  timestamps.push(now);
-
-  while (
-    timestamps.length &&
-    now - timestamps[0] > 5000
-  ) {
-    timestamps.shift();
-  }
-
-  if (settings.antiFlood && timestamps.length >= 7) {
-    spamMap.delete(key);
-
-    await deleteMessage(chatId, msg.message_id);
-
-    const muted = await muteUser(
-      chatId,
-      userId,
-      settings.muteMinutes
-    );
-
-    if (muted) {
-      await bot.sendMessage(
+      await deleteMsg(
         chatId,
-        `🌊 تم اكتشاف Flood.\n🔇 تم كتم ${mention(msg.from)} لمدة ${settings.muteMinutes} دقائق.`,
-        { parse_mode: 'Markdown' }
+        msg.message_id
       );
 
-      await sendLog(
-        chatId,
-        `🌊 *Anti-Flood*\n👤 ${mention(msg.from)}\n🔇 Mute ${settings.muteMinutes}m`
-      );
+      const ok =
+        await mute(
+          chatId,
+          userId,
+          settings.muteMinutes
+        );
+
+      if (ok) {
+        await bot.sendMessage(
+          chatId,
+          `🌊 تم اكتشاف Flood.\n🔇 تم كتم ${mention(msg.from)} لمدة ${settings.muteMinutes} دقائق.`,
+          {
+            parse_mode: 'Markdown'
+          }
+        );
+      }
     }
   }
 }
 
-bot.on('message', async msg => {
-  try {
-    await processProtection(msg);
-  } catch (e) {
-    console.error('Protection error:', e.message);
+bot.on(
+  'message',
+  async msg => {
+    try {
+      await protection(msg);
+    } catch (err) {
+      console.error(
+        'Protection error:',
+        err.message
+      );
+    }
   }
-});
+);
 
-// /start
-bot.onText(/^\/start$/, async msg => {
-  await bot.sendMessage(
-    msg.chat.id,
-    `🤖 *DREX BOT*
+// =========================
+// START
+// =========================
 
-🛡️ حماية وإدارة
+bot.onText(
+  /^\/start$/,
+  async msg => {
+    await bot.sendMessage(
+      msg.chat.id,
+      `🤖 *DREX BOT*
+
+🛡️ نظام حماية
 🎮 ألعاب
-🏆 نقاط ومستويات
-📊 ترتيب
-⚙️ إعدادات
+🏆 نقاط و XP
+👮 إدارة القروب
+🚨 نظام طوارئ
 
-البوت قيد التطوير 🔥`,
-    { parse_mode: 'Markdown' }
-  );
-});
+استخدم /help لمعرفة الأوامر.`,
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+  }
+);
 
-// /help
-bot.onText(/^\/help$/, async msg => {
-  await bot.sendMessage(
-    msg.chat.id,
-    `📚 *أوامر DREX*
+// =========================
+// HELP
+// =========================
+
+bot.onText(
+  /^\/help$/,
+  async msg => {
+    await bot.sendMessage(
+      msg.chat.id,
+      `📚 *أوامر DREX*
 
 🛡️ الحماية
 /antilink on
 /antilink off
 /antiswear on
 /antiswear off
-/antispam on
-/antispam off
 /antiflood on
 /antiflood off
 
 👮 الإدارة
-/ban
-/unban
-/kick
-/mute
-/unmute
 /warn
 /unwarn
 /warnings
+/mute
+/unmute
+/ban
+/unban
+/kick
 
 🚨 الطوارئ
 /lockdown
@@ -443,590 +563,1002 @@ bot.onText(/^\/help$/, async msg => {
 🎮 الألعاب
 /games
 /guess
-/rps
+/rps حجر
+/rps ورق
+/rps مقص
 
 🏆 الحساب
 /profile
 /balance
 /daily
-/top`,
-    { parse_mode: 'Markdown' }
-  );
-});
+/top
 
-// Settings commands
-function settingCommand(command, property) {
+⚙️ الإعدادات
+/settings`,
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+  }
+);
+
+// =========================
+// SETTINGS
+// =========================
+
+function settingCommand(
+  command,
+  property
+) {
   bot.onText(
-    new RegExp(`^\\/${command} (on|off)$`, 'i'),
+    new RegExp(
+      `^\\/${command} (on|off)$`,
+      'i'
+    ),
     async msg => {
-      if (msg.chat.type === 'private') return;
+      if (
+        msg.chat.type ===
+        'private'
+      ) {
+        return;
+      }
 
-      if (!(await isAdmin(msg.chat.id, msg.from.id))) {
+      if (
+        !(await isAdmin(
+          msg.chat.id,
+          msg.from.id
+        ))
+      ) {
         return bot.sendMessage(
           msg.chat.id,
-          '❌ هذا الأمر للمشرفين فقط.'
+          '❌ للمشرفين فقط.'
         );
       }
 
-      const value = msg.text.toLowerCase().endsWith('on');
+      const value =
+        msg.text
+          .toLowerCase()
+          .endsWith('on');
 
-      groupData(msg.chat.id)[property] = value;
+      getGroup(
+        msg.chat.id
+      )[property] = value;
+
       save();
 
       await bot.sendMessage(
         msg.chat.id,
-        `✅ ${command}: ${value ? 'تشغيل' : 'إيقاف'}`
+        `✅ ${command}: ${
+          value
+            ? 'تشغيل 🟢'
+            : 'إيقاف 🔴'
+        }`
       );
     }
   );
 }
 
-settingCommand('antilink', 'antiLink');
-settingCommand('antiswear', 'antiSwear');
-settingCommand('antispam', 'antiSpam');
-settingCommand('antiflood', 'antiFlood');
+settingCommand(
+  'antilink',
+  'antiLink'
+);
 
-// /settings
-bot.onText(/^\/settings$/, async msg => {
-  if (msg.chat.type === 'private') return;
+settingCommand(
+  'antiswear',
+  'antiSwear'
+);
 
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(
+settingCommand(
+  'antiflood',
+  'antiFlood'
+);
+
+// =========================
+// SETTINGS VIEW
+// =========================
+
+bot.onText(
+  /^\/settings$/,
+  async msg => {
+    if (
+      msg.chat.type ===
+      'private'
+    ) {
+      return;
+    }
+
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
+
+    const s =
+      getGroup(msg.chat.id);
+
+    await bot.sendMessage(
       msg.chat.id,
-      '❌ للمشرفين فقط.'
+      `⚙️ *DREX SETTINGS*
+
+🔗 Anti-Link:
+${s.antiLink ? '🟢 ON' : '🔴 OFF'}
+
+🤬 Anti-Swear:
+${s.antiSwear ? '🟢 ON' : '🔴 OFF'}
+
+🌊 Anti-Flood:
+${s.antiFlood ? '🟢 ON' : '🔴 OFF'}
+
+🚨 Lockdown:
+${s.lockdown ? '🔴 ON' : '🟢 OFF'}
+
+⚠️ حد التحذيرات:
+${s.warningsLimit}
+
+🔇 مدة الكتم:
+${s.muteMinutes} دقيقة`,
+      {
+        parse_mode: 'Markdown'
+      }
     );
   }
+);
 
-  const s = groupData(msg.chat.id);
+// =========================
+// WARN
+// =========================
 
-  await bot.sendMessage(
-    msg.chat.id,
-    `⚙️ *إعدادات DREX*
+bot.onText(
+  /^\/warn$/,
+  async msg => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
 
-🔗 Anti-Link: ${s.antiLink ? '🟢' : '🔴'}
-🤬 Anti-Swear: ${s.antiSwear ? '🟢' : '🔴'}
-🚫 Anti-Spam: ${s.antiSpam ? '🟢' : '🔴'}
-🌊 Anti-Flood: ${s.antiFlood ? '🟢' : '🔴'}
-🚨 Lockdown: ${s.lockdown ? '🔴' : '🟢'}
+    const target =
+      repliedUser(msg);
 
-⚠️ الحد: ${s.warningsLimit}
-🔇 الكتم: ${s.muteMinutes} دقيقة`,
-    { parse_mode: 'Markdown' }
-  );
-});
+    if (!target) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '↩️ استخدم /warn بالرد على رسالة العضو.'
+      );
+    }
 
-// Get replied user
-function repliedUser(msg) {
-  return msg.reply_to_message?.from || null;
-}
+    if (
+      await isAdmin(
+        msg.chat.id,
+        target.id
+      )
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ لا يمكن تحذير مشرف.'
+      );
+    }
 
-// /warn
-bot.onText(/^\/warn$/, async msg => {
-  if (msg.chat.type === 'private') return;
+    const user =
+      getUser(target.id);
 
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
+    if (
+      !user.warnings[
+        msg.chat.id
+      ]
+    ) {
+      user.warnings[
+        msg.chat.id
+      ] = 0;
+    }
 
-  const target = repliedUser(msg);
+    user.warnings[
+      msg.chat.id
+    ]++;
 
-  if (!target) {
-    return bot.sendMessage(
+    save();
+
+    const count =
+      user.warnings[
+        msg.chat.id
+      ];
+
+    const limit =
+      getGroup(
+        msg.chat.id
+      ).warningsLimit;
+
+    await bot.sendMessage(
       msg.chat.id,
-      '↩️ استخدم الأمر بالرد على رسالة العضو.'
-    );
-  }
-
-  if (await isAdmin(msg.chat.id, target.id)) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '❌ لا يمكن تحذير مشرف.'
-    );
-  }
-
-  const user = userData(target.id);
-
-  if (!user.warnings[msg.chat.id]) {
-    user.warnings[msg.chat.id] = 0;
-  }
-
-  user.warnings[msg.chat.id]++;
-
-  const s = groupData(msg.chat.id);
-
-  save();
-
-  await bot.sendMessage(
-    msg.chat.id,
-    `⚠️ ${mention(target)}\nالتحذير: ${user.warnings[msg.chat.id]}/${s.warningsLimit}`,
-    { parse_mode: 'Markdown' }
-  );
-
-  if (user.warnings[msg.chat.id] >= s.warningsLimit) {
-    await muteUser(
-      msg.chat.id,
-      target.id,
-      s.muteMinutes
+      `⚠️ ${mention(target)}\nالتحذير: ${count}/${limit}`,
+      {
+        parse_mode: 'Markdown'
+      }
     );
 
-    user.warnings[msg.chat.id] = 0;
+    if (count >= limit) {
+      const minutes =
+        getGroup(
+          msg.chat.id
+        ).muteMinutes;
+
+      await mute(
+        msg.chat.id,
+        target.id,
+        minutes
+      );
+
+      user.warnings[
+        msg.chat.id
+      ] = 0;
+
+      save();
+
+      await bot.sendMessage(
+        msg.chat.id,
+        `🔇 تم كتم ${mention(target)} لمدة ${minutes} دقائق.`,
+        {
+          parse_mode: 'Markdown'
+        }
+      );
+    }
+  }
+);
+
+// =========================
+// UNWARN
+// =========================
+
+bot.onText(
+  /^\/unwarn$/,
+  async msg => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
+
+    const target =
+      repliedUser(msg);
+
+    if (!target) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '↩️ استخدم /unwarn بالرد على العضو.'
+      );
+    }
+
+    const user =
+      getUser(target.id);
+
+    user.warnings[
+      msg.chat.id
+    ] = Math.max(
+      0,
+      (user.warnings[
+        msg.chat.id
+      ] || 0) - 1
+    );
+
     save();
 
     await bot.sendMessage(
       msg.chat.id,
-      `🔇 تم كتم ${mention(target)} لمدة ${s.muteMinutes} دقائق.`,
-      { parse_mode: 'Markdown' }
+      `✅ تم إزالة تحذير من ${mention(target)}.`,
+      {
+        parse_mode: 'Markdown'
+      }
     );
   }
-});
-
-// /unwarn
-bot.onText(/^\/unwarn$/, async msg => {
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
-
-  const target = repliedUser(msg);
-
-  if (!target) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '↩️ استخدم الأمر بالرد على رسالة العضو.'
-    );
-  }
-
-  const user = userData(target.id);
-
-  user.warnings[msg.chat.id] = Math.max(
-    0,
-    (user.warnings[msg.chat.id] || 0) - 1
-  );
-
-  save();
-
-  await bot.sendMessage(
-    msg.chat.id,
-    `✅ تم إزالة تحذير من ${mention(target)}.`,
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /warnings
-bot.onText(/^\/warnings$/, async msg => {
-  const target = repliedUser(msg) || msg.from;
-
-  const user = userData(target.id);
-
-  await bot.sendMessage(
-    msg.chat.id,
-    `⚠️ تحذيرات ${mention(target)}: ${user.warnings[msg.chat.id] || 0}`,
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /mute
-bot.onText(/^\/mute(?: (\d+))?$/, async (msg, match) => {
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
-
-  const target = repliedUser(msg);
-
-  if (!target) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '↩️ استخدم /mute بالرد على العضو.'
-    );
-  }
-
-  const minutes = Number(match[1] || 10);
-
-  const ok = await muteUser(
-    msg.chat.id,
-    target.id,
-    minutes
-  );
-
-  await bot.sendMessage(
-    msg.chat.id,
-    ok
-      ? `🔇 تم كتم ${mention(target)} لمدة ${minutes} دقيقة.`
-      : '❌ تعذر تنفيذ الكتم.',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /unmute
-bot.onText(/^\/unmute$/, async msg => {
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
-
-  const target = repliedUser(msg);
-
-  if (!target) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '↩️ استخدم /unmute بالرد على العضو.'
-    );
-  }
-
-  const ok = await unmuteUser(
-    msg.chat.id,
-    target.id
-  );
-
-  await bot.sendMessage(
-    msg.chat.id,
-    ok ? `🔊 تم فك كتم ${mention(target)}.` : '❌ تعذر فك الكتم.',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /ban
-bot.onText(/^\/ban$/, async msg => {
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
-
-  const target = repliedUser(msg);
-
-  if (!target) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '↩️ استخدم /ban بالرد على العضو.'
-    );
-  }
-
-  if (await isAdmin(msg.chat.id, target.id)) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '❌ لا يمكن حظر مشرف.'
-    );
-  }
-
-  const ok = await banUser(
-    msg.chat.id,
-    target.id
-  );
-
-  await bot.sendMessage(
-    msg.chat.id,
-    ok
-      ? `🔨 تم حظر ${mention(target)}.`
-      : '❌ تعذر تنفيذ الحظر.',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /unban
-bot.onText(/^\/unban$/, async msg => {
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
-
-  const target = repliedUser(msg);
-
-  if (!target) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '↩️ استخدم /unban بالرد على رسالة العضو.'
-    );
-  }
-
-  const ok = await unbanUser(
-    msg.chat.id,
-    target.id
-  );
-
-  await bot.sendMessage(
-    msg.chat.id,
-    ok
-      ? `✅ تم فك حظر ${mention(target)}.`
-      : '❌ تعذر فك الحظر.',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /kick
-bot.onText(/^\/kick$/, async msg => {
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
-
-  const target = repliedUser(msg);
-
-  if (!target) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '↩️ استخدم /kick بالرد على العضو.'
-    );
-  }
-
-  const ok = await kickUser(
-    msg.chat.id,
-    target.id
-  );
-
-  await bot.sendMessage(
-    msg.chat.id,
-    ok
-      ? `👢 تم طرد ${mention(target)}.`
-      : '❌ تعذر تنفيذ الطرد.',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /lockdown
-bot.onText(/^\/lockdown$/, async msg => {
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
-
-  groupData(msg.chat.id).lockdown = true;
-  save();
-
-  await bot.sendMessage(
-    msg.chat.id,
-    '🚨 *تم تفعيل وضع الطوارئ Lockdown.*\n\nلن يتم السماح للأعضاء بإرسال الرسائل.',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /unlockdown
-bot.onText(/^\/unlockdown$/, async msg => {
-  if (!(await isAdmin(msg.chat.id, msg.from.id))) {
-    return bot.sendMessage(msg.chat.id, '❌ للمشرفين فقط.');
-  }
-
-  groupData(msg.chat.id).lockdown = false;
-  save();
-
-  await bot.sendMessage(
-    msg.chat.id,
-    '✅ تم إيقاف وضع الطوارئ.'
-  );
-});
-
-// /profile
-bot.onText(/^\/profile$/, async msg => {
-  const user = userData(msg.from.id);
-
-  await bot.sendMessage(
-    msg.chat.id,
-    `👤 *ملف DREX*
-
-الاسم: ${msg.from.first_name || 'غير معروف'}
-⭐ XP: ${user.xp}
-💰 النقاط: ${user.points}
-🏆 الانتصارات: ${user.wins}
-❌ الخسائر: ${user.losses}
-🎮 الألعاب: ${user.games}`,
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /balance
-bot.onText(/^\/balance$/, async msg => {
-  const user = userData(msg.from.id);
-
-  await bot.sendMessage(
-    msg.chat.id,
-    `💰 نقاطك: ${user.points}\n⭐ XP: ${user.xp}`
-  );
-});
-
-// /daily
-bot.onText(/^\/daily$/, async msg => {
-  const user = userData(msg.from.id);
-
-  const today = new Date().toISOString().slice(0, 10);
-
-  if (user.daily === today) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '⏳ أخذت مكافأتك اليومية بالفعل.'
-    );
-  }
-
-  user.daily = today;
-  user.points += 250;
-  user.xp += 100;
-
-  save();
-
-  await bot.sendMessage(
-    msg.chat.id,
-    '🎁 حصلت على مكافأتك اليومية!\n\n💰 +250 DREX\n⭐ +100 XP'
-  );
-});
-
-// /guess
-bot.onText(/^\/guess$/, async msg => {
-  const number = Math.floor(Math.random() * 10) + 1;
-
-  data.guesses = data.guesses || {};
-  data.guesses[msg.from.id] = number;
-
-  save();
-
-  await bot.sendMessage(
-    msg.chat.id,
-    '🎯 *تخمين الرقم*\n\nاختر رقمًا من 1 إلى 10 باستخدام:\n`/guess 5`',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-bot.onText(/^\/guess (\d+)$/, async (msg, match) => {
-  const guess = Number(match[1]);
-
-  data.guesses = data.guesses || {};
-
-  const answer = data.guesses[msg.from.id];
-
-  if (!answer) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '❌ ابدأ اللعبة أولًا بـ /guess'
-    );
-  }
-
-  const user = userData(msg.from.id);
-
-  user.games++;
-
-  if (guess === answer) {
-    user.wins++;
-    user.points += 100;
-    user.xp += 50;
+);
+
+// =========================
+// WARNINGS
+// =========================
+
+bot.onText(
+  /^\/warnings$/,
+  async msg => {
+    const target =
+      repliedUser(msg) ||
+      msg.from;
+
+    const user =
+      getUser(target.id);
+
+    const count =
+      user.warnings[
+        msg.chat.id
+      ] || 0;
 
     await bot.sendMessage(
       msg.chat.id,
-      `🎉 صح!\n\n🎯 الرقم: ${answer}\n💰 +100 DREX\n⭐ +50 XP`
+      `⚠️ تحذيرات ${mention(target)}: ${count}`,
+      {
+        parse_mode: 'Markdown'
+      }
     );
-  } else {
-    user.losses++;
+  }
+);
+
+// =========================
+// MUTE
+// =========================
+
+bot.onText(
+  /^\/mute(?: (\d+))?$/,
+  async (msg, match) => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
+
+    const target =
+      repliedUser(msg);
+
+    if (!target) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '↩️ استخدم /mute بالرد على العضو.'
+      );
+    }
+
+    const minutes =
+      Number(match[1] || 10);
+
+    const ok =
+      await mute(
+        msg.chat.id,
+        target.id,
+        minutes
+      );
 
     await bot.sendMessage(
       msg.chat.id,
-      `❌ خطأ!\nالرقم الصحيح كان: ${answer}`
+      ok
+        ? `🔇 تم كتم ${mention(target)} لمدة ${minutes} دقيقة.`
+        : '❌ تعذر تنفيذ الكتم.',
+      {
+        parse_mode: 'Markdown'
+      }
     );
   }
+);
 
-  delete data.guesses[msg.from.id];
-  save();
-});
+// =========================
+// UNMUTE
+// =========================
 
-// /rps
-bot.onText(/^\/rps (حجر|ورق|مقص)$/, async (msg, match) => {
-  const choices = ['حجر', 'ورق', 'مقص'];
+bot.onText(
+  /^\/unmute$/,
+  async msg => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
 
-  const botChoice =
-    choices[Math.floor(Math.random() * choices.length)];
+    const target =
+      repliedUser(msg);
 
-  const player = match[1];
+    if (!target) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '↩️ استخدم /unmute بالرد على العضو.'
+      );
+    }
 
-  const user = userData(msg.from.id);
+    const ok =
+      await unmute(
+        msg.chat.id,
+        target.id
+      );
 
-  user.games++;
-
-  let result;
-
-  if (player === botChoice) {
-    result = '🤝 تعادل!';
-  } else if (
-    (player === 'حجر' && botChoice === 'مقص') ||
-    (player === 'ورق' && botChoice === 'حجر') ||
-    (player === 'مقص' && botChoice === 'ورق')
-  ) {
-    result = '🎉 فزت!';
-    user.wins++;
-    user.points += 50;
-    user.xp += 25;
-  } else {
-    result = '❌ خسرت!';
-    user.losses++;
+    await bot.sendMessage(
+      msg.chat.id,
+      ok
+        ? `🔊 تم فك كتم ${mention(target)}.`
+        : '❌ تعذر فك الكتم.',
+      {
+        parse_mode: 'Markdown'
+      }
+    );
   }
+);
 
-  save();
+// =========================
+// BAN
+// =========================
 
-  await bot.sendMessage(
-    msg.chat.id,
-    `🎮 *حجر ورق مقص*
+bot.onText(
+  /^\/ban$/,
+  async msg => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
+
+    const target =
+      repliedUser(msg);
+
+    if (!target) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '↩️ استخدم /ban بالرد على العضو.'
+      );
+    }
+
+    if (
+      await isAdmin(
+        msg.chat.id,
+        target.id
+      )
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ لا يمكن حظر مشرف.'
+      );
+    }
+
+    const ok =
+      await ban(
+        msg.chat.id,
+        target.id
+      );
+
+    await bot.sendMessage(
+      msg.chat.id,
+      ok
+        ? `🔨 تم حظر ${mention(target)}.`
+        : '❌ تعذر تنفيذ الحظر.',
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+  }
+);
+
+// =========================
+// UNBAN
+// =========================
+
+bot.onText(
+  /^\/unban$/,
+  async msg => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
+
+    const target =
+      repliedUser(msg);
+
+    if (!target) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '↩️ استخدم /unban بالرد على العضو.'
+      );
+    }
+
+    const ok =
+      await unban(
+        msg.chat.id,
+        target.id
+      );
+
+    await bot.sendMessage(
+      msg.chat.id,
+      ok
+        ? `✅ تم فك حظر ${mention(target)}.`
+        : '❌ تعذر فك الحظر.',
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+  }
+);
+
+// =========================
+// KICK
+// =========================
+
+bot.onText(
+  /^\/kick$/,
+  async msg => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
+
+    const target =
+      repliedUser(msg);
+
+    if (!target) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '↩️ استخدم /kick بالرد على العضو.'
+      );
+    }
+
+    const ok =
+      await kick(
+        msg.chat.id,
+        target.id
+      );
+
+    await bot.sendMessage(
+      msg.chat.id,
+      ok
+        ? `👢 تم طرد ${mention(target)}.`
+        : '❌ تعذر تنفيذ الطرد.',
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+  }
+);
+
+// =========================
+// LOCKDOWN
+// =========================
+
+bot.onText(
+  /^\/lockdown$/,
+  async msg => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
+
+    getGroup(
+      msg.chat.id
+    ).lockdown = true;
+
+    save();
+
+    await bot.sendMessage(
+      msg.chat.id,
+      '🚨 تم تفعيل Lockdown.'
+    );
+  }
+);
+
+// =========================
+// UNLOCKDOWN
+// =========================
+
+bot.onText(
+  /^\/unlockdown$/,
+  async msg => {
+    if (
+      !(await isAdmin(
+        msg.chat.id,
+        msg.from.id
+      ))
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ للمشرفين فقط.'
+      );
+    }
+
+    getGroup(
+      msg.chat.id
+    ).lockdown = false;
+
+    save();
+
+    await bot.sendMessage(
+      msg.chat.id,
+      '✅ تم إيقاف Lockdown.'
+    );
+  }
+);
+
+// =========================
+// PROFILE
+// =========================
+
+bot.onText(
+  /^\/profile$/,
+  async msg => {
+    const user =
+      getUser(msg.from.id);
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `👤 *DREX PROFILE*
+
+👤 الاسم:
+${msg.from.first_name || 'غير معروف'}
+
+💰 النقاط:
+${user.points}
+
+⭐ XP:
+${user.xp}
+
+🏆 الانتصارات:
+${user.wins}
+
+❌ الخسائر:
+${user.losses}
+
+🎮 الألعاب:
+${user.games}`,
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+  }
+);
+
+// =========================
+// BALANCE
+// =========================
+
+bot.onText(
+  /^\/balance$/,
+  async msg => {
+    const user =
+      getUser(msg.from.id);
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `💰 نقاطك: ${user.points}\n⭐ XP: ${user.xp}`
+    );
+  }
+);
+
+// =========================
+// DAILY
+// =========================
+
+bot.onText(
+  /^\/daily$/,
+  async msg => {
+    const user =
+      getUser(msg.from.id);
+
+    const today =
+      new Date()
+        .toISOString()
+        .slice(0, 10);
+
+    if (
+      user.daily === today
+    ) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '⏳ أخذت مكافأتك اليومية بالفعل.'
+      );
+    }
+
+    user.daily = today;
+    user.points += 250;
+    user.xp += 100;
+
+    save();
+
+    await bot.sendMessage(
+      msg.chat.id,
+      '🎁 المكافأة اليومية!\n\n💰 +250 نقطة\n⭐ +100 XP'
+    );
+  }
+);
+
+// =========================
+// GUESS GAME
+// =========================
+
+bot.onText(
+  /^\/guess$/,
+  async msg => {
+    const number =
+      Math.floor(
+        Math.random() * 10
+      ) + 1;
+
+    data.guesses[
+      msg.from.id
+    ] = number;
+
+    save();
+
+    await bot.sendMessage(
+      msg.chat.id,
+      '🎯 خمن رقمًا من 1 إلى 10.\n\nاكتب مثلًا:\n/guess 7'
+    );
+  }
+);
+
+bot.onText(
+  /^\/guess (\d+)$/,
+  async (msg, match) => {
+    const answer =
+      data.guesses[
+        msg.from.id
+      ];
+
+    if (!answer) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '❌ ابدأ اللعبة بـ /guess'
+      );
+    }
+
+    const guess =
+      Number(match[1]);
+
+    const user =
+      getUser(msg.from.id);
+
+    user.games++;
+
+    if (
+      guess === answer
+    ) {
+      user.wins++;
+      user.points += 100;
+      user.xp += 50;
+
+      await bot.sendMessage(
+        msg.chat.id,
+        `🎉 فزت!\n🎯 الرقم كان ${answer}\n💰 +100\n⭐ +50 XP`
+      );
+    } else {
+      user.losses++;
+
+      await bot.sendMessage(
+        msg.chat.id,
+        `❌ خسرت!\nالرقم الصحيح: ${answer}`
+      );
+    }
+
+    delete data.guesses[
+      msg.from.id
+    ];
+
+    save();
+  }
+);
+
+// =========================
+// RPS
+// =========================
+
+bot.onText(
+  /^\/rps (حجر|ورق|مقص)$/,
+  async (msg, match) => {
+    const choices = [
+      'حجر',
+      'ورق',
+      'مقص'
+    ];
+
+    const player =
+      match[1];
+
+    const computer =
+      choices[
+        Math.floor(
+          Math.random() *
+          choices.length
+        )
+      ];
+
+    const user =
+      getUser(msg.from.id);
+
+    user.games++;
+
+    let result;
+
+    if (
+      player === computer
+    ) {
+      result = '🤝 تعادل!';
+    } else if (
+      (player === 'حجر' &&
+        computer === 'مقص') ||
+      (player === 'ورق' &&
+        computer === 'حجر') ||
+      (player === 'مقص' &&
+        computer === 'ورق')
+    ) {
+      result = '🎉 فزت!';
+
+      user.wins++;
+      user.points += 50;
+      user.xp += 25;
+    } else {
+      result = '❌ خسرت!';
+
+      user.losses++;
+    }
+
+    save();
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `🎮 *حجر ورق مقص*
 
 👤 أنت: ${player}
-🤖 البوت: ${botChoice}
+🤖 البوت: ${computer}
 
 ${result}`,
-    { parse_mode: 'Markdown' }
-  );
-});
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+  }
+);
 
-// /games
-bot.onText(/^\/games$/, async msg => {
-  await bot.sendMessage(
-    msg.chat.id,
-    `🎮 *DREX GAMES*
+// =========================
+// GAMES
+// =========================
+
+bot.onText(
+  /^\/games$/,
+  async msg => {
+    await bot.sendMessage(
+      msg.chat.id,
+      `🎮 *DREX GAMES*
 
 🎯 /guess
 🪨 /rps حجر
-📊 /profile
+📄 /rps ورق
+✂️ /rps مقص
+
+🏆 /profile
 💰 /balance
 🎁 /daily
-🏆 /top
-
-🚧 ألعاب جماعية إضافية قادمة...`,
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// /top
-bot.onText(/^\/top$/, async msg => {
-  const users = Object.entries(data.users)
-    .map(([id, user]) => ({
-      id,
-      points: user.points || 0
-    }))
-    .sort((a, b) => b.points - a.points)
-    .slice(0, 10);
-
-  if (!users.length) {
-    return bot.sendMessage(
-      msg.chat.id,
-      '🏆 لا توجد بيانات حتى الآن.'
+📊 /top`,
+      {
+        parse_mode: 'Markdown'
+      }
     );
   }
+);
 
-  let text = '🏆 *DREX TOP 10*\n\n';
+// =========================
+// TOP
+// =========================
 
-  users.forEach((user, index) => {
-    text += `${index + 1}. 👤 ${user.id} — 💰 ${user.points}\n`;
-  });
+bot.onText(
+  /^\/top$/,
+  async msg => {
+    const top =
+      Object.entries(data.users)
+        .map(
+          ([id, user]) => ({
+            id,
+            points:
+              user.points || 0
+          })
+        )
+        .sort(
+          (a, b) =>
+            b.points - a.points
+        )
+        .slice(0, 10);
 
-  await bot.sendMessage(
-    msg.chat.id,
-    text,
-    { parse_mode: 'Markdown' }
-  );
-});
+    if (!top.length) {
+      return bot.sendMessage(
+        msg.chat.id,
+        '🏆 لا توجد بيانات حتى الآن.'
+      );
+    }
 
-bot.on('polling_error', error => {
-  console.error('❌ Telegram polling error:', error.message);
-});
+    let text =
+      '🏆 *DREX TOP 10*\n\n';
 
-console.log('━━━━━━━━━━━━━━━━━━━━');
-console.log('🤖 DREX BOT');
-console.log('🛡️ Security: ON');
-console.log('🎮 Games: ON');
-console.log('🏆 Points: ON');
-console.log('━━━━━━━━━━━━━━━━━━━━');
-const http = require('http');
+    top.forEach(
+      (user, index) => {
+        text +=
+          `${index + 1}. ${user.id} — 💰 ${user.points}\n`;
+      }
+    );
 
-const PORT = process.env.PORT || 10000;
+    await bot.sendMessage(
+      msg.chat.id,
+      text,
+      {
+        parse_mode: 'Markdown'
+      }
+    );
+  }
+);
 
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('DREX BOT is running');
-}).listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Server running on port ${PORT}`);
-});
+// =========================
+// ERRORS
+// =========================
+
+bot.on(
+  'polling_error',
+  error => {
+    console.error(
+      '❌ Telegram polling error:',
+      error.message
+    );
+  }
+);
+
+process.on(
+  'uncaughtException',
+  error => {
+    console.error(
+      '❌ Uncaught Exception:',
+      error
+    );
+  }
+);
+
+process.on(
+  'unhandledRejection',
+  error => {
+    console.error(
+      '❌ Unhandled Rejection:',
+      error
+    );
+  }
+);
