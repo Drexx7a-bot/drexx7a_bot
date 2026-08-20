@@ -2,9 +2,9 @@ const { Telegraf } = require("telegraf");
 const fs = require("fs");
 const path = require("path");
 
-// =========================
+// =====================================================
 // CONFIG
-// =========================
+// =====================================================
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_ID = Number(process.env.OWNER_ID || 0);
@@ -16,9 +16,9 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// =========================
+// =====================================================
 // DATABASE
-// =========================
+// =====================================================
 
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "database.json");
@@ -27,46 +27,49 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-const defaultDatabase = {
+const defaultDB = {
   groups: {},
   users: {}
 };
 
-function loadDatabase() {
+function loadDB() {
   try {
     if (!fs.existsSync(DATA_FILE)) {
       fs.writeFileSync(
         DATA_FILE,
-        JSON.stringify(defaultDatabase, null, 2)
+        JSON.stringify(defaultDB, null, 2),
+        "utf8"
       );
 
-      return JSON.parse(JSON.stringify(defaultDatabase));
+      return JSON.parse(JSON.stringify(defaultDB));
     }
 
-    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    return JSON.parse(
+      fs.readFileSync(DATA_FILE, "utf8")
+    );
   } catch (error) {
-    console.error("❌ خطأ في قاعدة البيانات:", error.message);
-
-    return JSON.parse(JSON.stringify(defaultDatabase));
+    console.error("❌ خطأ في قراءة قاعدة البيانات:", error.message);
+    return JSON.parse(JSON.stringify(defaultDB));
   }
 }
 
-let db = loadDatabase();
+let db = loadDB();
 
-function saveDatabase() {
+function saveDB() {
   try {
     fs.writeFileSync(
       DATA_FILE,
-      JSON.stringify(db, null, 2)
+      JSON.stringify(db, null, 2),
+      "utf8"
     );
   } catch (error) {
-    console.error("❌ فشل حفظ قاعدة البيانات:", error.message);
+    console.error("❌ خطأ في حفظ قاعدة البيانات:", error.message);
   }
 }
 
-// =========================
-// GROUP DATA
-// =========================
+// =====================================================
+// GROUPS
+// =====================================================
 
 function getGroup(chatId) {
   const id = String(chatId);
@@ -74,29 +77,48 @@ function getGroup(chatId) {
   if (!db.groups[id]) {
     db.groups[id] = {
       title: "",
-
+      users: {},
+      warnings: {},
+      replies: {},
       settings: {
         protection: true,
         antiSpam: true,
         antiLinks: false,
         welcome: true,
-        xp: true
+        xp: true,
+        games: true,
+        autoReplies: true
       },
-
-      users: {},
-      warnings: {},
-      customReplies: {}
+      gamePoints: {}
     };
 
-    saveDatabase();
+    saveDB();
   }
 
-  return db.groups[id];
+  const group = db.groups[id];
+
+  // توافق مع قاعدة بيانات قديمة
+  group.users ||= {};
+  group.warnings ||= {};
+  group.replies ||= {};
+  group.gamePoints ||= {};
+
+  group.settings ||= {};
+
+  group.settings.protection ??= true;
+  group.settings.antiSpam ??= true;
+  group.settings.antiLinks ??= false;
+  group.settings.welcome ??= true;
+  group.settings.xp ??= true;
+  group.settings.games ??= true;
+  group.settings.autoReplies ??= true;
+
+  return group;
 }
 
-// =========================
-// USER DATA
-// =========================
+// =====================================================
+// USERS
+// =====================================================
 
 function getUser(userId) {
   const id = String(userId);
@@ -108,15 +130,15 @@ function getUser(userId) {
       messages: 0
     };
 
-    saveDatabase();
+    saveDB();
   }
 
   return db.users[id];
 }
 
-// =========================
+// =====================================================
 // ROLES
-// =========================
+// =====================================================
 
 const roles = {
   "عضو": 1,
@@ -159,18 +181,16 @@ function rolePower(role) {
   return roles[role] || 0;
 }
 
-function canManage(ctx, requiredRole = "مشرف") {
-  const currentRole = getRole(ctx);
-
+function canManage(ctx, role = "مشرف") {
   return (
-    rolePower(currentRole) >=
-    rolePower(requiredRole)
+    rolePower(getRole(ctx)) >=
+    rolePower(role)
   );
 }
 
-// =========================
-// TELEGRAM ADMIN CHECK
-// =========================
+// =====================================================
+// TELEGRAM ADMIN
+// =====================================================
 
 async function isTelegramAdmin(ctx, userId = null) {
   if (
@@ -183,10 +203,11 @@ async function isTelegramAdmin(ctx, userId = null) {
   try {
     const id = userId || ctx.from.id;
 
-    const member = await ctx.telegram.getChatMember(
-      ctx.chat.id,
-      id
-    );
+    const member =
+      await ctx.telegram.getChatMember(
+        ctx.chat.id,
+        id
+      );
 
     return (
       member.status === "creator" ||
@@ -197,23 +218,23 @@ async function isTelegramAdmin(ctx, userId = null) {
   }
 }
 
-// =========================
-// TARGET MEMBER
-// =========================
+// =====================================================
+// TARGET FROM REPLY
+// =====================================================
 
 function getTarget(ctx) {
   const reply = ctx.message?.reply_to_message;
 
-  if (!reply || !reply.from) {
+  if (!reply?.from) {
     return null;
   }
 
   return reply.from;
 }
 
-// =========================
-// XP SYSTEM
-// =========================
+// =====================================================
+// XP
+// =====================================================
 
 function addXP(userId, amount) {
   const user = getUser(userId);
@@ -221,25 +242,60 @@ function addXP(userId, amount) {
   user.xp += amount;
   user.messages++;
 
-  const requiredXP = user.level * 100;
+  let levelUp = false;
 
-  if (user.xp >= requiredXP) {
-    user.xp -= requiredXP;
+  while (user.xp >= user.level * 100) {
+    user.xp -= user.level * 100;
     user.level++;
-
-    saveDatabase();
-
-    return true;
+    levelUp = true;
   }
 
-  saveDatabase();
+  saveDB();
 
-  return false;
+  return levelUp;
 }
 
-// =========================
-// SPAM SYSTEM
-// =========================
+// =====================================================
+// GAME POINTS
+// =====================================================
+
+function addGamePoints(chatId, userId, amount) {
+  const group = getGroup(chatId);
+  const id = String(userId);
+
+  group.gamePoints[id] =
+    (group.gamePoints[id] || 0) + amount;
+
+  saveDB();
+}
+
+function getGamePoints(chatId, userId) {
+  const group = getGroup(chatId);
+
+  return group.gamePoints[String(userId)] || 0;
+}
+
+// =====================================================
+// GAME STATE
+// =====================================================
+
+const games = new Map();
+
+function getGame(chatId) {
+  return games.get(String(chatId));
+}
+
+function setGame(chatId, game) {
+  games.set(String(chatId), game);
+}
+
+function deleteGame(chatId) {
+  games.delete(String(chatId));
+}
+
+// =====================================================
+// SPAM
+// =====================================================
 
 const spamMap = new Map();
 
@@ -264,11 +320,13 @@ async function checkSpam(ctx) {
     return false;
   }
 
-  const key = `${ctx.chat.id}:${ctx.from.id}`;
+  const key =
+    `${ctx.chat.id}:${ctx.from.id}`;
 
   const now = Date.now();
 
-  let messages = spamMap.get(key) || [];
+  let messages =
+    spamMap.get(key) || [];
 
   messages = messages.filter(
     time => now - time < 5000
@@ -306,9 +364,9 @@ async function checkSpam(ctx) {
   return false;
 }
 
-// =========================
+// =====================================================
 // LINK PROTECTION
-// =========================
+// =====================================================
 
 async function checkLinks(ctx) {
   if (
@@ -356,86 +414,107 @@ async function checkLinks(ctx) {
   return false;
 }
 
-// =========================
+// =====================================================
 // START
-// =========================
+// =====================================================
 
 bot.start(async ctx => {
   await ctx.reply(
-`🤖 أهلاً بك في DrexChatBot
+`🤖 أهلاً ${ctx.from.first_name || ""}
+
+مرحبًا بك في DrexChatBot ❤️
 
 بوت شات وإدارة وترفيه متكامل.
 
-📚 /help
-👤 /profile
-🏆 /rank
-🥇 /top
-🎮 /games
-⚙️ /settings`
+📚 /المساعدة
+👤 /ملفي
+🏆 /رتبتي
+🎮 /العاب
+⚙️ /الاعدادات`
   );
 });
 
-// =========================
+// =====================================================
 // HELP
-// =========================
+// =====================================================
 
-bot.command("help", async ctx => {
+bot.command("المساعدة", async ctx => {
   await ctx.reply(
 `📚 أوامر DrexChatBot
 
 👤 الأعضاء
-/profile — ملفك الشخصي
-/rank — مستواك
-/top — المتصدرون
 
-🎮 الترفيه
-/roll — رقم عشوائي
-/coin — عملة
-/quiz — سؤال
+/ملفي
+/رتبتي
+/المتصدرين
+/نقاطي
+/نقاط_الالعاب
+
+🎮 الألعاب
+
+/العاب
+/حجر
+/خمن
+/سؤال
+/صح_خطأ
+/اسرع
+/عملة
+
+💬 الردود
+
+/اضف_رد
+/حذف_رد
+/الردود
+/مسح_الردود
 
 🛡️ الإدارة
-/warn — تحذير
-/warnings — التحذيرات
-/mute — كتم
-/unmute — فك الكتم
-/kick — طرد
-/ban — حظر
-/unban — فك الحظر
+
+/تحذير
+/تحذيرات
+/كتم
+/فك_كتم
+/طرد
+/حظر
+/فك_حظر
 
 👑 الرتب
-/promote — إعطاء رتبة
-/demote — إزالة رتبة
+
+/ترقية
+/تنزيل
 
 ⚙️ الإعدادات
-/settings — الإعدادات`
+
+/الاعدادات
+/تفعيل
+/تعطيل`
   );
 });
 
-// =========================
+// =====================================================
 // PROFILE
-// =========================
+// =====================================================
 
-bot.command("profile", async ctx => {
+bot.command("ملفي", async ctx => {
   const user = getUser(ctx.from.id);
   const role = getRole(ctx);
 
   await ctx.reply(
-`👤 الملف الشخصي
+`👤 ملفك الشخصي
 
 الاسم: ${ctx.from.first_name || "غير معروف"}
-🪪 الرتبة: ${role}
 
+👑 الرتبة: ${role}
 ⭐ المستوى: ${user.level}
 ✨ XP: ${user.xp}/${user.level * 100}
 💬 الرسائل: ${user.messages}`
   );
 });
 
-// =========================
+// =====================================================
 // RANK
-// =========================
+// =====================================================
 
-bot.command("rank", async ctx => {
+bot.command("رتبتي", async ctx => {
   const user = getUser(ctx.from.id);
 
   await ctx.reply(
@@ -443,26 +522,29 @@ bot.command("rank", async ctx => {
 
 ⭐ المستوى: ${user.level}
 ✨ XP: ${user.xp}/${user.level * 100}
-💬 الرسائل: ${user.messages}`
+👑 الرتبة: ${getRole(ctx)}`
   );
 });
 
-// =========================
+// =====================================================
 // TOP
-// =========================
+// =====================================================
 
-bot.command("top", async ctx => {
-  const users = Object.entries(db.users)
-    .sort((a, b) => {
-      const scoreA =
-        a[1].level * 1000 + a[1].xp;
+bot.command("المتصدرين", async ctx => {
+  const users =
+    Object.entries(db.users)
+      .sort((a, b) => {
+        const A =
+          b[1].level * 1000 +
+          b[1].xp;
 
-      const scoreB =
-        b[1].level * 1000 + b[1].xp;
+        const B =
+          a[1].level * 1000 +
+          a[1].xp;
 
-      return scoreB - scoreA;
-    })
-    .slice(0, 10);
+        return B - A;
+      })
+      .slice(0, 10);
 
   if (!users.length) {
     return ctx.reply(
@@ -470,139 +552,792 @@ bot.command("top", async ctx => {
     );
   }
 
-  let message = "🏆 أفضل الأعضاء\n\n";
+  let message =
+    "🏆 متصدرون الـXP\n\n";
 
-  users.forEach(([id, user], index) => {
-    message +=
-      `${index + 1}. ID: ${id}\n` +
-      `   ⭐ المستوى ${user.level}\n` +
-      `   ✨ ${user.xp} XP\n\n`;
-  });
+  users.forEach(
+    ([id, user], index) => {
+      message +=
+`#${index + 1} — ID: ${id}
+⭐ المستوى: ${user.level}
+✨ XP: ${user.xp}
+
+`;
+    }
+  );
 
   await ctx.reply(message);
 });
 
-// =========================
-// ROLL
-// =========================
+// =====================================================
+// GAME POINTS
+// =====================================================
 
-bot.command("roll", async ctx => {
-  const number =
-    Math.floor(Math.random() * 100) + 1;
+bot.command("نقاطي", async ctx => {
+  const points =
+    getGamePoints(
+      ctx.chat.id,
+      ctx.from.id
+    );
 
   await ctx.reply(
-    `🎲 رقمك العشوائي: ${number}`
+    `🎮 نقاط ألعابك: ${points}`
   );
 });
 
-// =========================
-// COIN
-// =========================
+bot.command("نقاط_الالعاب", async ctx => {
+  const group =
+    getGroup(ctx.chat.id);
 
-bot.command("coin", async ctx => {
+  const top =
+    Object.entries(
+      group.gamePoints
+    )
+      .sort(
+        (a, b) => b[1] - a[1]
+      )
+      .slice(0, 10);
+
+  if (!top.length) {
+    return ctx.reply(
+      "🎮 لا توجد نقاط ألعاب حتى الآن."
+    );
+  }
+
+  let text =
+    "🏆 متصدرو الألعاب\n\n";
+
+  top.forEach(
+    ([id, points], index) => {
+      text +=
+        `${index + 1}. ID: ${id} — ${points} نقطة\n`;
+    }
+  );
+
+  await ctx.reply(text);
+});
+
+// =====================================================
+// GAMES MENU
+// =====================================================
+
+bot.command("العاب", async ctx => {
+  const group =
+    getGroup(ctx.chat.id);
+
+  if (!group.settings.games) {
+    return ctx.reply(
+      "🚫 الألعاب متوقفة في هذه المجموعة."
+    );
+  }
+
+  await ctx.reply(
+`🎮 ألعاب Drex
+
+🎯 /خمن
+خمن الرقم من 1 إلى 100
+
+✊ /حجر
+حجر ورق مقص
+
+🧠 /سؤال
+سؤال عام
+
+❓ /صح_خطأ
+سؤال صح أو خطأ
+
+⚡ /اسرع
+أول شخص يرسل الإجابة يحصل على النقطة
+
+🪙 /عملة
+صورة أو كتابة
+
+🏆 /نقاطي
+شوف نقاطك
+
+🥇 /نقاط_الالعاب
+ترتيب اللاعبين`
+  );
+});
+
+// =====================================================
+// COIN
+// =====================================================
+
+bot.command("عملة", async ctx => {
   const result =
     Math.random() < 0.5
-      ? "صورة"
-      : "كتابة";
+      ? "🪙 صورة"
+      : "🪙 كتابة";
+
+  addGamePoints(
+    ctx.chat.id,
+    ctx.from.id,
+    1
+  );
 
   await ctx.reply(
-    `🪙 النتيجة: ${result}`
+    `${result}\n\n🎁 +1 نقطة`
   );
 });
 
-// =========================
-// QUIZ
-// =========================
+// =====================================================
+// GUESS NUMBER
+// =====================================================
 
-const quizzes = [
+bot.command("خمن", async ctx => {
+  const group =
+    getGroup(ctx.chat.id);
+
+  if (!group.settings.games) {
+    return;
+  }
+
+  const number =
+    Math.floor(
+      Math.random() * 100
+    ) + 1;
+
+  setGame(
+    ctx.chat.id,
+    {
+      type: "guess",
+      number,
+      userId: ctx.from.id
+    }
+  );
+
+  await ctx.reply(
+`🔢 لعبة خمن الرقم
+
+أنا اخترت رقمًا بين 1 و100.
+
+أرسل تخمينك الآن 👇`
+  );
+});
+
+// =====================================================
+// ROCK PAPER SCISSORS
+// =====================================================
+
+bot.command("حجر", async ctx => {
+  const choices = [
+    "حجر",
+    "ورق",
+    "مقص"
+  ];
+
+  const botChoice =
+    choices[
+      Math.floor(
+        Math.random() *
+        choices.length
+      )
+    ];
+
+  const userChoice =
+    choices[
+      Math.floor(
+        Math.random() *
+        choices.length
+      )
+    ];
+
+  let result;
+
+  if (botChoice === userChoice) {
+    result = "تعادل 🤝";
+  } else if (
+    (userChoice === "حجر" &&
+      botChoice === "مقص") ||
+    (userChoice === "ورق" &&
+      botChoice === "حجر") ||
+    (userChoice === "مقص" &&
+      botChoice === "ورق")
+  ) {
+    result = "فزت 🎉";
+
+    addGamePoints(
+      ctx.chat.id,
+      ctx.from.id,
+      3
+    );
+  } else {
+    result = "خسرت 😭";
+  }
+
+  await ctx.reply(
+`✊ حجر ورق مقص
+
+أنت: ${userChoice}
+أنا: ${botChoice}
+
+${result}`
+  );
+});
+
+// =====================================================
+// GENERAL QUESTIONS
+// =====================================================
+
+const questions = [
   {
-    question: "ما عاصمة السعودية؟",
-    answer: "الرياض"
+    q: "ما عاصمة السعودية؟",
+    a: "الرياض"
   },
   {
-    question: "كم عدد أيام الأسبوع؟",
-    answer: "7"
+    q: "ما أكبر كوكب في المجموعة الشمسية؟",
+    a: "المشتري"
   },
   {
-    question:
-      "ما أكبر كوكب في المجموعة الشمسية؟",
-    answer: "المشتري"
+    q: "كم عدد أيام الأسبوع؟",
+    a: "7"
   },
   {
-    question:
-      "ما اللغة التي يستخدمها هذا البوت؟",
-    answer: "جافاسكربت"
+    q: "ما اللغة المستخدمة في هذا البوت؟",
+    a: "جافاسكربت"
+  },
+  {
+    q: "كم عدد أشهر السنة؟",
+    a: "12"
   }
 ];
 
-const activeQuizzes = new Map();
-
-bot.command("quiz", async ctx => {
-  const quiz =
-    quizzes[
-      Math.floor(Math.random() * quizzes.length)
+bot.command("سؤال", async ctx => {
+  const q =
+    questions[
+      Math.floor(
+        Math.random() *
+        questions.length
+      )
     ];
 
-  activeQuizzes.set(
+  setGame(
     ctx.chat.id,
-    quiz.answer.toLowerCase()
+    {
+      type: "question",
+      answer:
+        q.a.toLowerCase()
+    }
   );
 
   await ctx.reply(
-`🧠 سؤال:
+`🧠 سؤال
 
-${quiz.question}
+${q.q}
 
-اكتب الإجابة في الشات 👇`
+أول شخص يرسل الإجابة الصحيحة يفوز 🏆`
   );
 });
 
-// =========================
-// MANAGEMENT CHECK
-// =========================
+// =====================================================
+// TRUE / FALSE
+// =====================================================
 
-async function requireManagement(
-  ctx,
-  role = "مشرف"
-) {
+const trueFalseQuestions = [
+  {
+    q: "الشمس نجم.",
+    a: "صح"
+  },
+  {
+    q: "الأرض أكبر من الشمس.",
+    a: "خطأ"
+  },
+  {
+    q: "الماء يتجمد عند درجة صفر مئوية.",
+    a: "صح"
+  },
+  {
+    q: "القمر كوكب.",
+    a: "خطأ"
+  }
+];
+
+bot.command("صح_خطأ", async ctx => {
+  const q =
+    trueFalseQuestions[
+      Math.floor(
+        Math.random() *
+        trueFalseQuestions.length
+      )
+    ];
+
+  setGame(
+    ctx.chat.id,
+    {
+      type: "truefalse",
+      answer:
+        q.a.toLowerCase()
+    }
+  );
+
+  await ctx.reply(
+`❓ صح أو خطأ
+
+${q.q}
+
+اكتب: صح أو خطأ`
+  );
+});
+
+// =====================================================
+// FAST ANSWER
+// =====================================================
+
+const fastQuestions = [
+  {
+    q: "اكتب كلمة: دركس",
+    a: "دركس"
+  },
+  {
+    q: "اكتب كلمة: تيليجرام",
+    a: "تيليجرام"
+  },
+  {
+    q: "اكتب كلمة: بوت",
+    a: "بوت"
+  },
+  {
+    q: "اكتب كلمة: لعبة",
+    a: "لعبة"
+  }
+];
+
+bot.command("اسرع", async ctx => {
+  const q =
+    fastQuestions[
+      Math.floor(
+        Math.random() *
+        fastQuestions.length
+      )
+    ];
+
+  setGame(
+    ctx.chat.id,
+    {
+      type: "fast",
+      answer:
+        q.a.toLowerCase()
+    }
+  );
+
+  await ctx.reply(
+`⚡ أسرع إجابة
+
+${q.q}
+
+أول شخص يجاوب صح يحصل على 🏆 5 نقاط!`
+  );
+});
+
+// =====================================================
+// ANSWER GAMES
+// =====================================================
+
+bot.on("text", async ctx => {
+  const text =
+    ctx.message.text
+      .trim()
+      .toLowerCase();
+
+  if (text.startsWith("/")) {
+    return;
+  }
+
   if (
     !ctx.chat ||
     !["group", "supergroup"].includes(
       ctx.chat.type
     )
   ) {
-    await ctx.reply(
-      "❌ هذا الأمر للمجموعات فقط."
-    );
-
-    return false;
+    return;
   }
 
-  const customPermission =
-    canManage(ctx, role);
+  const game =
+    getGame(ctx.chat.id);
 
-  const telegramPermission =
-    await isTelegramAdmin(ctx);
+  if (!game) {
+    return;
+  }
+
+  if (game.type === "guess") {
+    const guess =
+      Number(text);
+
+    if (
+      Number.isNaN(guess) ||
+      guess < 1 ||
+      guess > 100
+    ) {
+      return;
+    }
+
+    if (
+      guess === game.number
+    ) {
+      addGamePoints(
+        ctx.chat.id,
+        ctx.from.id,
+        5
+      );
+
+      deleteGame(ctx.chat.id);
+
+      return ctx.reply(
+`🎉 فاز ${ctx.from.first_name || "اللاعب"}!
+
+🔢 الرقم كان: ${game.number}
+
+🏆 +5 نقاط`
+      );
+    }
+
+    if (
+      guess < game.number
+    ) {
+      return ctx.reply(
+        "⬆️ أكبر!"
+      );
+    }
+
+    return ctx.reply(
+      "⬇️ أصغر!"
+    );
+  }
 
   if (
-    !customPermission &&
-    !telegramPermission
+    ["question", "truefalse", "fast"]
+      .includes(game.type)
   ) {
-    await ctx.reply(
-      "❌ ما عندك صلاحية لاستخدام هذا الأمر."
-    );
+    if (
+      text === game.answer
+    ) {
+      const points =
+        game.type === "fast"
+          ? 5
+          : 3;
 
-    return false;
+      addGamePoints(
+        ctx.chat.id,
+        ctx.from.id,
+        points
+      );
+
+      deleteGame(ctx.chat.id);
+
+      return ctx.reply(
+`🎉 إجابة صحيحة!
+
+👤 ${ctx.from.first_name || "اللاعب"}
+🏆 +${points} نقاط`
+      );
+    }
+  }
+});
+
+// =====================================================
+// ADD REPLY
+// =====================================================
+
+const replySetup = new Map();
+
+bot.command("اضف_رد", async ctx => {
+  if (
+    !(await requireManagement(
+      ctx,
+      "مدير"
+    ))
+  ) {
+    return;
   }
 
-  return true;
-}
+  replySetup.set(
+    ctx.from.id,
+    {
+      chatId: ctx.chat.id,
+      step: "word"
+    }
+  );
 
-// =========================
+  await ctx.reply(
+`📝 إضافة رد جديد
+
+أرسل الآن الكلمة التي تريد أن يراقبها البوت.
+
+مثال:
+سلام`
+  );
+});
+
+// =====================================================
+// DELETE REPLY
+// =====================================================
+
+bot.command("حذف_رد", async ctx => {
+  if (
+    !(await requireManagement(
+      ctx,
+      "مدير"
+    ))
+  ) {
+    return;
+  }
+
+  replySetup.set(
+    ctx.from.id,
+    {
+      chatId: ctx.chat.id,
+      step: "delete"
+    }
+  );
+
+  await ctx.reply(
+`🗑️ حذف رد
+
+أرسل الكلمة التي تريد حذف ردها.`
+  );
+});
+
+// =====================================================
+// LIST REPLIES
+// =====================================================
+
+bot.command("الردود", async ctx => {
+  const group =
+    getGroup(ctx.chat.id);
+
+  const replies =
+    Object.entries(
+      group.replies
+    );
+
+  if (!replies.length) {
+    return ctx.reply(
+      "📭 لا توجد ردود مضافة."
+    );
+  }
+
+  let text =
+    "💬 الردود الموجودة:\n\n";
+
+  replies.forEach(
+    ([word, response], index) => {
+      text +=
+`${index + 1}. ${word} ← ${response}\n\n`;
+    }
+  );
+
+  await ctx.reply(text);
+});
+
+// =====================================================
+// DELETE ALL REPLIES
+// =====================================================
+
+bot.command("مسح_الردود", async ctx => {
+  if (
+    !(await requireManagement(
+      ctx,
+      "مدير"
+    ))
+  ) {
+    return;
+  }
+
+  const group =
+    getGroup(ctx.chat.id);
+
+  group.replies = {};
+
+  saveDB();
+
+  await ctx.reply(
+    "🗑️ تم حذف جميع الردود."
+  );
+});
+
+// =====================================================
+// SETTINGS
+// =====================================================
+
+bot.command("الاعدادات", async ctx => {
+  if (
+    !(await requireManagement(
+      ctx,
+      "مدير"
+    ))
+  ) {
+    return;
+  }
+
+  const group =
+    getGroup(ctx.chat.id);
+
+  const s =
+    group.settings;
+
+  await ctx.reply(
+`⚙️ إعدادات المجموعة
+
+🛡️ الحماية:
+${s.protection ? "✅ مفعلة" : "❌ متوقفة"}
+
+🚫 منع السبام:
+${s.antiSpam ? "✅ مفعل" : "❌ متوقف"}
+
+🔗 منع الروابط:
+${s.antiLinks ? "✅ مفعل" : "❌ متوقف"}
+
+👋 الترحيب:
+${s.welcome ? "✅ مفعل" : "❌ متوقف"}
+
+⭐ XP:
+${s.xp ? "✅ مفعل" : "❌ متوقف"}
+
+🎮 الألعاب:
+${s.games ? "✅ مفعلة" : "❌ متوقفة"}
+
+💬 الردود:
+${s.autoReplies ? "✅ مفعلة" : "❌ متوقفة"}
+
+لتغيير الإعداد:
+
+/تفعيل الحماية
+/تعطيل الحماية
+
+/تفعيل السبام
+/تعطيل السبام
+
+/تفعيل الروابط
+/تعطيل الروابط
+
+/تفعيل الترحيب
+/تعطيل الترحيب
+
+/تفعيل xp
+/تعطيل xp
+
+/تفعيل الالعاب
+/تعطيل الالعاب
+
+/تفعيل الردود
+/تعطيل الردود`
+  );
+});
+
+// =====================================================
+// ENABLE
+// =====================================================
+
+bot.command("تفعيل", async ctx => {
+  if (
+    !(await requireManagement(
+      ctx,
+      "مدير"
+    ))
+  ) {
+    return;
+  }
+
+  const option =
+    ctx.message.text
+      .split(/\s+/)
+      .slice(1)
+      .join(" ");
+
+  const group =
+    getGroup(ctx.chat.id);
+
+  const map = {
+    "الحماية": "protection",
+    "السبام": "antiSpam",
+    "الروابط": "antiLinks",
+    "الترحيب": "welcome",
+    "xp": "xp",
+    "الالعاب": "games",
+    "الردود": "autoReplies"
+  };
+
+  if (!map[option]) {
+    return ctx.reply(
+`❌ اختر إعدادًا صحيحًا:
+
+الحماية
+السبام
+الروابط
+الترحيب
+xp
+الالعاب
+الردود`
+    );
+  }
+
+  group.settings[
+    map[option]
+  ] = true;
+
+  saveDB();
+
+  await ctx.reply(
+    `✅ تم تفعيل ${option}.`
+  );
+});
+
+// =====================================================
+// DISABLE
+// =====================================================
+
+bot.command("تعطيل", async ctx => {
+  if (
+    !(await requireManagement(
+      ctx,
+      "مدير"
+    ))
+  ) {
+    return;
+  }
+
+  const option =
+    ctx.message.text
+      .split(/\s+/)
+      .slice(1)
+      .join(" ");
+
+  const group =
+    getGroup(ctx.chat.id);
+
+  const map = {
+    "الحماية": "protection",
+    "السبام": "antiSpam",
+    "الروابط": "antiLinks",
+    "الترحيب": "welcome",
+    "xp": "xp",
+    "الالعاب": "games",
+    "الردود": "autoReplies"
+  };
+
+  if (!map[option]) {
+    return ctx.reply(
+      "❌ الإعداد غير موجود."
+    );
+  }
+
+  group.settings[
+    map[option]
+  ] = false;
+
+  saveDB();
+
+  await ctx.reply(
+    `❌ تم تعطيل ${option}.`
+  );
+});
+
+// =====================================================
 // WARN
-// =========================
+// =====================================================
 
-bot.command("warn", async ctx => {
+bot.command("تحذير", async ctx => {
   if (
     !(await requireManagement(
       ctx,
@@ -612,7 +1347,8 @@ bot.command("warn", async ctx => {
     return;
   }
 
-  const target = getTarget(ctx);
+  const target =
+    getTarget(ctx);
 
   if (!target) {
     return ctx.reply(
@@ -620,56 +1356,52 @@ bot.command("warn", async ctx => {
     );
   }
 
-  const group = getGroup(ctx.chat.id);
+  const group =
+    getGroup(ctx.chat.id);
 
-  const id = String(target.id);
+  const id =
+    String(target.id);
 
   group.warnings[id] =
     (group.warnings[id] || 0) + 1;
 
-  saveDatabase();
+  saveDB();
 
   await ctx.reply(
 `⚠️ تم تحذير ${target.first_name || "العضو"}.
 
-عدد التحذيرات: ${group.warnings[id]}`
+عدد التحذيرات:
+${group.warnings[id]}`
   );
 });
 
-// =========================
+// =====================================================
 // WARNINGS
-// =========================
+// =====================================================
 
-bot.command("warnings", async ctx => {
-  if (
-    !ctx.chat ||
-    !["group", "supergroup"].includes(
-      ctx.chat.type
-    )
-  ) {
-    return ctx.reply(
-      "❌ هذا الأمر للمجموعات فقط."
-    );
-  }
-
+bot.command("تحذيرات", async ctx => {
   const target =
-    getTarget(ctx) || ctx.from;
+    getTarget(ctx) ||
+    ctx.from;
 
-  const group = getGroup(ctx.chat.id);
+  const group =
+    getGroup(ctx.chat.id);
 
   const count =
-    group.warnings[String(target.id)] || 0;
+    group.warnings[
+      String(target.id)
+    ] || 0;
 
   await ctx.reply(
-`⚠️ تحذيرات ${target.first_name || "العضو"}: ${count}`
+    `⚠️ تحذيرات ${target.first_name || "العضو"}: ${count}`
   );
 });
 
-// =========================
+// =====================================================
 // MUTE
-// =========================
+// =====================================================
 
-bot.command("mute", async ctx => {
+bot.command("كتم", async ctx => {
   if (
     !(await requireManagement(
       ctx,
@@ -679,11 +1411,12 @@ bot.command("mute", async ctx => {
     return;
   }
 
-  const target = getTarget(ctx);
+  const target =
+    getTarget(ctx);
 
   if (!target) {
     return ctx.reply(
-      "↩️ استخدم الأمر بالرد على رسالة العضو."
+      "↩️ استخدم الأمر بالرد."
     );
   }
 
@@ -702,16 +1435,16 @@ bot.command("mute", async ctx => {
     );
   } catch {
     await ctx.reply(
-      "❌ لم أستطع كتم العضو. تأكد أن البوت مشرف."
+      "❌ تأكد أن البوت مشرف."
     );
   }
 });
 
-// =========================
+// =====================================================
 // UNMUTE
-// =========================
+// =====================================================
 
-bot.command("unmute", async ctx => {
+bot.command("فك_كتم", async ctx => {
   if (
     !(await requireManagement(
       ctx,
@@ -721,11 +1454,12 @@ bot.command("unmute", async ctx => {
     return;
   }
 
-  const target = getTarget(ctx);
+  const target =
+    getTarget(ctx);
 
   if (!target) {
     return ctx.reply(
-      "↩️ استخدم الأمر بالرد على رسالة العضو."
+      "↩️ استخدم الأمر بالرد."
     );
   }
 
@@ -758,11 +1492,11 @@ bot.command("unmute", async ctx => {
   }
 });
 
-// =========================
+// =====================================================
 // KICK
-// =========================
+// =====================================================
 
-bot.command("kick", async ctx => {
+bot.command("طرد", async ctx => {
   if (
     !(await requireManagement(
       ctx,
@@ -772,11 +1506,12 @@ bot.command("kick", async ctx => {
     return;
   }
 
-  const target = getTarget(ctx);
+  const target =
+    getTarget(ctx);
 
   if (!target) {
     return ctx.reply(
-      "↩️ استخدم الأمر بالرد على رسالة العضو."
+      "↩️ استخدم الأمر بالرد."
     );
   }
 
@@ -802,11 +1537,11 @@ bot.command("kick", async ctx => {
   }
 });
 
-// =========================
+// =====================================================
 // BAN
-// =========================
+// =====================================================
 
-bot.command("ban", async ctx => {
+bot.command("حظر", async ctx => {
   if (
     !(await requireManagement(
       ctx,
@@ -816,11 +1551,12 @@ bot.command("ban", async ctx => {
     return;
   }
 
-  const target = getTarget(ctx);
+  const target =
+    getTarget(ctx);
 
   if (!target) {
     return ctx.reply(
-      "↩️ استخدم الأمر بالرد على رسالة العضو."
+      "↩️ استخدم الأمر بالرد."
     );
   }
 
@@ -839,11 +1575,11 @@ bot.command("ban", async ctx => {
   }
 });
 
-// =========================
+// =====================================================
 // UNBAN
-// =========================
+// =====================================================
 
-bot.command("unban", async ctx => {
+bot.command("فك_حظر", async ctx => {
   if (
     !(await requireManagement(
       ctx,
@@ -853,11 +1589,12 @@ bot.command("unban", async ctx => {
     return;
   }
 
-  const target = getTarget(ctx);
+  const target =
+    getTarget(ctx);
 
   if (!target) {
     return ctx.reply(
-      "↩️ استخدم الأمر بالرد على رسالة العضو."
+      "↩️ استخدم الأمر بالرد."
     );
   }
 
@@ -876,11 +1613,11 @@ bot.command("unban", async ctx => {
   }
 });
 
-// =========================
+// =====================================================
 // PROMOTE
-// =========================
+// =====================================================
 
-bot.command("promote", async ctx => {
+bot.command("ترقية", async ctx => {
   if (
     !(await requireManagement(
       ctx,
@@ -890,26 +1627,23 @@ bot.command("promote", async ctx => {
     return;
   }
 
-  const target = getTarget(ctx);
+  const target =
+    getTarget(ctx);
 
   if (!target) {
     return ctx.reply(
-      "↩️ استخدم الأمر بالرد على رسالة العضو."
+      "↩️ استخدم الأمر بالرد على العضو."
     );
   }
 
-  const parts =
+  const role =
     ctx.message.text
-      .trim()
-      .split(/\s+/);
-
-  const requestedRole =
-    parts.slice(1).join(" ");
+      .split(/\s+/)
+      .slice(1)
+      .join(" ");
 
   if (
-    !assignableRoles.includes(
-      requestedRole
-    )
+    !assignableRoles.includes(role)
   ) {
     return ctx.reply(
 `❌ الرتب المتاحة:
@@ -921,15 +1655,14 @@ bot.command("promote", async ctx => {
 💎 مالك
 
 مثال:
- /promote عضو شرف`
+
+/ترقية عضو شرف`
     );
   }
 
-  const myRole = getRole(ctx);
-
   if (
-    rolePower(requestedRole) >=
-    rolePower(myRole)
+    rolePower(role) >=
+    rolePower(getRole(ctx))
   ) {
     return ctx.reply(
       "❌ لا يمكنك إعطاء رتبة مساوية أو أعلى من رتبتك."
@@ -939,25 +1672,27 @@ bot.command("promote", async ctx => {
   const group =
     getGroup(ctx.chat.id);
 
-  group.users[String(target.id)] = {
-    role: requestedRole
+  group.users[
+    String(target.id)
+  ] = {
+    role
   };
 
-  saveDatabase();
+  saveDB();
 
   await ctx.reply(
 `✅ تمت الترقية
 
 👤 ${target.first_name || "العضو"}
-🏅 الرتبة: ${requestedRole}`
+👑 الرتبة: ${role}`
   );
 });
 
-// =========================
+// =====================================================
 // DEMOTE
-// =========================
+// =====================================================
 
-bot.command("demote", async ctx => {
+bot.command("تنزيل", async ctx => {
   if (
     !(await requireManagement(
       ctx,
@@ -967,166 +1702,63 @@ bot.command("demote", async ctx => {
     return;
   }
 
-  const target = getTarget(ctx);
+  const target =
+    getTarget(ctx);
 
   if (!target) {
     return ctx.reply(
-      "↩️ استخدم الأمر بالرد على رسالة العضو."
-    );
-  }
-
-  const targetRole =
-    getGroup(ctx.chat.id)
-      .users[String(target.id)]
-      ?.role || "عضو";
-
-  if (
-    rolePower(targetRole) >=
-    rolePower(getRole(ctx))
-  ) {
-    return ctx.reply(
-      "❌ لا يمكنك إزالة رتبة أعلى أو مساوية لرتبتك."
+      "↩️ استخدم الأمر بالرد."
     );
   }
 
   const group =
     getGroup(ctx.chat.id);
 
-  group.users[String(target.id)] = {
+  group.users[
+    String(target.id)
+  ] = {
     role: "عضو"
   };
 
-  saveDatabase();
+  saveDB();
 
   await ctx.reply(
-    `↩️ تمت إعادة ${target.first_name || "العضو"} إلى رتبة العضو.`
+    `↩️ تم تنزيل ${target.first_name || "العضو"} إلى رتبة العضو.`
   );
 });
 
-// =========================
-// SETTINGS
-// =========================
-
-bot.command("settings", async ctx => {
-  if (
-    !(await requireManagement(
-      ctx,
-      "مدير"
-    ))
-  ) {
-    return;
-  }
-
-  const group =
-    getGroup(ctx.chat.id);
-
-  const s = group.settings;
-
-  await ctx.reply(
-`⚙️ إعدادات المجموعة
-
-🛡️ الحماية: ${s.protection ? "مفعلة ✅" : "متوقفة ❌"}
-🚫 منع السبام: ${s.antiSpam ? "مفعل ✅" : "متوقف ❌"}
-🔗 منع الروابط: ${s.antiLinks ? "مفعل ✅" : "متوقف ❌"}
-👋 الترحيب: ${s.welcome ? "مفعل ✅" : "متوقف ❌"}
-⭐ XP: ${s.xp ? "مفعل ✅" : "متوقف ❌"}
-
-لتغيير الإعداد:
-
-/set protection on
-/set antispam on
-/set links on
-/set welcome on
-/set xp on`
-  );
-});
-
-// =========================
-// SET SETTINGS
-// =========================
-
-bot.command("set", async ctx => {
-  if (
-    !(await requireManagement(
-      ctx,
-      "مدير"
-    ))
-  ) {
-    return;
-  }
-
-  const parts =
-    ctx.message.text
-      .trim()
-      .split(/\s+/);
-
-  const option = parts[1];
-  const value = parts[2];
-
-  const settingsMap = {
-    protection: "protection",
-    antispam: "antiSpam",
-    links: "antiLinks",
-    welcome: "welcome",
-    xp: "xp"
-  };
-
-  if (
-    !settingsMap[option] ||
-    !["on", "off"].includes(value)
-  ) {
-    return ctx.reply(
-`❌ الاستخدام الصحيح:
-
-/set protection on
-/set antispam on
-/set links on
-/set welcome on
-/set xp on`
-    );
-  }
-
-  const group =
-    getGroup(ctx.chat.id);
-
-  group.settings[
-    settingsMap[option]
-  ] = value === "on";
-
-  saveDatabase();
-
-  await ctx.reply(
-    `✅ تم ${value === "on" ? "تفعيل" : "إيقاف"} الإعداد.`
-  );
-});
-
-// =========================
+// =====================================================
 // WELCOME
-// =========================
+// =====================================================
 
-bot.on("new_chat_members", async ctx => {
-  const group =
-    getGroup(ctx.chat.id);
+bot.on(
+  "new_chat_members",
+  async ctx => {
+    const group =
+      getGroup(ctx.chat.id);
 
-  if (!group.settings.welcome) {
-    return;
+    if (!group.settings.welcome) {
+      return;
+    }
+
+    for (
+      const member of
+      ctx.message.new_chat_members
+    ) {
+      await ctx.reply(
+`👋 أهلاً وسهلاً
+
+نورتنا ${member.first_name || "يا عضو"} ❤️
+
+استمتع معنا 🤍`
+      );
+    }
   }
+);
 
-  for (
-    const member of
-    ctx.message.new_chat_members
-  ) {
-    await ctx.reply(
-      `👋 أهلاً ${member.first_name || "بك"}!
-
-نورت المجموعة ❤️`
-    );
-  }
-});
-
-// =========================
-// TEXT HANDLER
-// =========================
+// =====================================================
+// NORMAL MESSAGES
+// =====================================================
 
 bot.on("text", async ctx => {
   const text =
@@ -1145,12 +1777,14 @@ bot.on("text", async ctx => {
     return;
   }
 
-  // حماية السبام
+  // -------------------------------
+  // Protection
+  // -------------------------------
+
   if (await checkSpam(ctx)) {
     return;
   }
 
-  // حماية الروابط
   if (await checkLinks(ctx)) {
     return;
   }
@@ -1158,9 +1792,12 @@ bot.on("text", async ctx => {
   const group =
     getGroup(ctx.chat.id);
 
+  // -------------------------------
   // XP
+  // -------------------------------
+
   if (group.settings.xp) {
-    const leveledUp =
+    const levelUp =
       addXP(
         ctx.from.id,
         Math.floor(
@@ -1168,74 +1805,158 @@ bot.on("text", async ctx => {
         ) + 5
       );
 
-    if (leveledUp) {
+    if (levelUp) {
       await ctx.reply(
-        `🎉 مبروك ${ctx.from.first_name || ""}!
+`🎉 مبروك ${ctx.from.first_name || ""}!
 
-وصلت إلى المستوى الجديد ⭐`
+⭐ وصلت إلى مستوى ${getUser(ctx.from.id).level}`
       );
     }
   }
 
-  // الردود المخصصة
-  const lowerText =
-    text.toLowerCase();
+  // -------------------------------
+  // Reply setup
+  // -------------------------------
 
-  const customReplies =
-    group.customReplies || {};
-
-  for (
-    const [trigger, response]
-    of Object.entries(customReplies)
-  ) {
-    if (
-      lowerText ===
-      trigger.toLowerCase()
-    ) {
-      await ctx.reply(response);
-      break;
-    }
-  }
-
-  // إجابة المسابقة
-  const quizAnswer =
-    activeQuizzes.get(
-      ctx.chat.id
+  const setup =
+    replySetup.get(
+      ctx.from.id
     );
 
   if (
-    quizAnswer &&
-    lowerText === quizAnswer
+    setup &&
+    setup.chatId === ctx.chat.id
   ) {
-    activeQuizzes.delete(
-      ctx.chat.id
-    );
+    // إضافة كلمة
+    if (setup.step === "word") {
+      setup.word = text;
+      setup.step = "response";
 
-    await ctx.reply(
-      `🎉 إجابة صحيحة يا ${ctx.from.first_name || "بطل"}!`
-    );
+      replySetup.set(
+        ctx.from.id,
+        setup
+      );
+
+      return ctx.reply(
+`💬 ممتاز.
+
+الآن أرسل الكلام الذي تريد أن يرد به البوت عندما يقول أحد:
+
+"${text}"`
+      );
+    }
+
+    // إضافة الرد
+    if (
+      setup.step === "response"
+    ) {
+      const group =
+        getGroup(ctx.chat.id);
+
+      group.replies[
+        setup.word
+      ] = text;
+
+      saveDB();
+
+      replySetup.delete(
+        ctx.from.id
+      );
+
+      return ctx.reply(
+`✅ تم إضافة الرد بنجاح!
+
+🗣️ الكلمة:
+${setup.word}
+
+💬 الرد:
+${text}`
+      );
+    }
+
+    // حذف رد
+    if (
+      setup.step === "delete"
+    ) {
+      const group =
+        getGroup(ctx.chat.id);
+
+      if (
+        !group.replies[text]
+      ) {
+        replySetup.delete(
+          ctx.from.id
+        );
+
+        return ctx.reply(
+          "❌ ما لقيت رد لهذه الكلمة."
+        );
+      }
+
+      delete group.replies[
+        text
+      ];
+
+      saveDB();
+
+      replySetup.delete(
+        ctx.from.id
+      );
+
+      return ctx.reply(
+`🗑️ تم حذف الرد الخاص بـ:
+
+"${text}"`
+      );
+    }
+  }
+
+  // -------------------------------
+  // Auto Replies
+  // -------------------------------
+
+  if (
+    group.settings.autoReplies
+  ) {
+    const key =
+      text.toLowerCase();
+
+    const replies =
+      group.replies || {};
+
+    for (
+      const [word, response]
+      of Object.entries(replies)
+    ) {
+      if (
+        word.toLowerCase() === key
+      ) {
+        await ctx.reply(response);
+        return;
+      }
+    }
   }
 });
 
-// =========================
-// BOT ERRORS
-// =========================
+// =====================================================
+// ERROR HANDLER
+// =====================================================
 
 bot.catch(error => {
   console.error(
-    "❌ Bot Error:",
+    "❌ Telegram Bot Error:",
     error
   );
 });
 
-// =========================
-// START BOT
-// =========================
+// =====================================================
+// START
+// =====================================================
 
 bot.launch()
   .then(() => {
     console.log(
-      "================================="
+      "===================================="
     );
 
     console.log(
@@ -1247,7 +1968,15 @@ bot.launch()
     );
 
     console.log(
-      "================================="
+      "🎮 Games System Online"
+    );
+
+    console.log(
+      "💬 Auto Replies Online"
+    );
+
+    console.log(
+      "===================================="
     );
   })
   .catch(error => {
@@ -1259,9 +1988,9 @@ bot.launch()
     process.exit(1);
   });
 
-// =========================
+// =====================================================
 // SAFE STOP
-// =========================
+// =====================================================
 
 process.once(
   "SIGINT",
@@ -1271,4 +2000,4 @@ process.once(
 process.once(
   "SIGTERM",
   () => bot.stop("SIGTERM")
-);
+); 
